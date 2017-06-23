@@ -667,15 +667,19 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                     outboundBuffer.failFlushed(cause, notify);
                     outboundBuffer.close(closeCause);
                 }
-                if (inFlush0) {
-                    invokeLater(new Runnable() {
-                        @Override
-                        public void run() {
-                            fireChannelInactiveAndDeregister(wasActive);
-                        }
-                    });
-                } else {
-                    fireChannelInactiveAndDeregister(wasActive);
+                try {
+                    if (inFlush0) {
+                        invokeLater(new Runnable() {
+                            @Override
+                            public void run() {
+                                fireChannelInactiveAndDeregister(wasActive);
+                            }
+                        });
+                    } else {
+                        fireChannelInactiveAndDeregister(wasActive);
+                    }
+                } finally {
+                    closeFuture.setClosed();
                 }
             }
         }
@@ -683,10 +687,8 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         private void doClose0(ChannelPromise promise) {
             try {
                 doClose();
-                closeFuture.setClosed();
                 safeSetSuccess(promise);
             } catch (Throwable t) {
-                closeFuture.setClosed();
                 safeSetFailure(promise, t);
             }
         }

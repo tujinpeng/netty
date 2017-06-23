@@ -66,6 +66,19 @@ public class EmbeddedChannel extends AbstractChannel {
         }
     };
 
+    private final ChannelFutureListener closeListener = new ChannelFutureListener() {
+        @Override
+        public void operationComplete(ChannelFuture future) throws Exception {
+            closeFuture().addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture future) throws Exception {
+                    // Ensure we rull al pending tasks when the channel is closed.
+                    // See https://github.com/netty/netty/issues/6894
+                    runPendingTasks();
+                }
+            });
+        }
+    };
     private final ChannelMetadata metadata;
     private final ChannelConfig config;
 
@@ -134,6 +147,7 @@ public class EmbeddedChannel extends AbstractChannel {
         super(null, channelId);
         metadata = metadata(hasDisconnect);
         config = new DefaultChannelConfig(this);
+        closeFuture().addListener(closeListener);
         setup(handlers);
     }
 
@@ -152,6 +166,7 @@ public class EmbeddedChannel extends AbstractChannel {
         super(null, channelId);
         metadata = metadata(hasDisconnect);
         this.config = ObjectUtil.checkNotNull(config, "config");
+        closeFuture().addListener(closeListener);
         setup(handlers);
     }
 
