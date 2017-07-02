@@ -65,6 +65,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * <li><a href="http://goo.gl/bD5ZUV">MpscPaddedQueue</a> from RxJava</li>
  * </ul>
  */
+//适用于单消费者多生产者的高效线程安全队列
 final class MpscLinkedQueue<E> extends AtomicReference<MpscLinkedQueueNode<E>> implements Queue<E> {
 
     private static final long serialVersionUID = -7505862422018495345L;
@@ -85,12 +86,15 @@ final class MpscLinkedQueue<E> extends AtomicReference<MpscLinkedQueueNode<E>> i
     // Also note that this class extends AtomicReference for the "tail" slot (which is the one that is appended to)
     // since Unsafe does not expose XCHG operation intrinsically.
 
+    //队列头结点 父类FullyPaddedReference追加了56字节 让头结点占满一个缓存行 防止cpu为共享问题
     private final FullyPaddedReference<MpscLinkedQueueNode<E>> headRef;
 
     MpscLinkedQueue() {
         MpscLinkedQueueNode<E> tombstone = new DefaultNode<E>(null);
         headRef = new FullyPaddedReference<MpscLinkedQueueNode<E>>();
         headRef.set(tombstone);
+        //队列初始化 head结点==tail结点 head结点的value为空
+        //head结点的next结点为空
         setTail(tombstone);
     }
 
@@ -127,6 +131,11 @@ final class MpscLinkedQueue<E> extends AtomicReference<MpscLinkedQueueNode<E>> i
         }
     }
 
+    /**
+     * 入队，多线程操作队列尾部
+     * @param value
+     * @return
+     */
     @Override
     @SuppressWarnings("unchecked")
     public boolean offer(E value) {
@@ -135,20 +144,27 @@ final class MpscLinkedQueue<E> extends AtomicReference<MpscLinkedQueueNode<E>> i
         }
 
         final MpscLinkedQueueNode<E> newTail;
+        //入队的结点类型为MpscLinkedQueueNode，直接使用，否则实例化一个newTail
         if (value instanceof MpscLinkedQueueNode) {
             newTail = (MpscLinkedQueueNode<E>) value;
             newTail.setNext(null);
         } else {
             newTail = new DefaultNode<E>(value);
         }
-
+        //插入队列尾部 多线程竞争，采用自旋+cas的方式更新队列尾部
         MpscLinkedQueueNode<E> oldTail = replaceTail(newTail);
+        //将原尾节点的next指向新的尾结点
         oldTail.setNext(newTail);
         return true;
     }
 
+    /**
+     * 出队，单线程操作队列头部
+     * @return
+     */
     @Override
     public E poll() {
+        //获取队列头结点的next节点
         final MpscLinkedQueueNode<E> next = peekNode();
         if (next == null) {
             return null;
@@ -158,11 +174,14 @@ final class MpscLinkedQueue<E> extends AtomicReference<MpscLinkedQueueNode<E>> i
         MpscLinkedQueueNode<E> oldHead = headRef.get();
         // Similar to 'headRef.node = next', but slightly faster (storestore vs loadstore)
         // See: http://robsjava.blogspot.com/2013/06/a-faster-volatile.html
-        headRef.lazySet(next);
+        //头结点的next节点设置成新的head节点
+        headRef.lazySet(next);//单线程直接写，lazySet写volatile变量 效率高但读取有一定延时
 
         // Break the linkage between the old head and the new head.
+        //将原头结点的next设置空，去掉原头结点和新头结点的关联
         oldHead.setNext(null);
 
+        //获取结点的value 并将新头结点的value设置成null 去除结点和数据的直接关联
         return next.clearMaybe();
     }
 
