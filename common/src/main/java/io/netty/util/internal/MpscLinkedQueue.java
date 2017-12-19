@@ -62,6 +62,8 @@ import java.util.Queue;
  * data structure modified to avoid false sharing between head and tail Ref as per implementation of MpscLinkedQueue
  * on <a href="https://github.com/JCTools/JCTools">JCTools project</a>.
  */
+//一个无锁化的高效的,单消费者多生产者的线程安全队列
+//队列中存在头、尾两个节点,通过追加字节的方式防止【缓存行冲突导致的伪共享问题】
 final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queue<E> {
 
     private static final long serialVersionUID = -1878402552271506449L;
@@ -110,6 +112,7 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
 
     @Override
     @SuppressWarnings("unchecked")
+    //多个生产者入队
     public boolean offer(E value) {
         if (value == null) {
             throw new NullPointerException("value");
@@ -122,13 +125,15 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
         } else {
             newTail = new DefaultNode<E>(value);
         }
-
+        //cas循环设置新的尾节点 保证原子性
         MpscLinkedQueueNode<E> oldTail = getAndSetTailRef(newTail);
+        //将老的尾节点的next指向新的尾节点
         oldTail.setNext(newTail);
         return true;
     }
 
     @Override
+    //单个消费者出队
     public E poll() {
         final MpscLinkedQueueNode<E> next = peekNode();
         if (next == null) {
@@ -140,6 +145,11 @@ final class MpscLinkedQueue<E> extends MpscLinkedQueueTailRef<E> implements Queu
         // Similar to 'headRef.node = next', but slightly faster (storestore vs loadstore)
         // See: http://robsjava.blogspot.com/2013/06/a-faster-volatile.html
         // See: http://psy-lob-saw.blogspot.com/2012/12/atomiclazyset-is-performance-win-for.html
+        /*
+         * 设置头节点为何要使用原子变量的lazySet方法?:
+         *     头结点[共享变量]只会被同一个线程访问,不需要保证修改后对其他线程立即可见
+         *     lazySet以设置普通变量的方式来修改共享变量,减少要更新volatile变量使用的内存屏障,提高程序的运行效率
+         */
         lazySetHeadRef(next);
 
         // Break the linkage between the old head and the new head.
