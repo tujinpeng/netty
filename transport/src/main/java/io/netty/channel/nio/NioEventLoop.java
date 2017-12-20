@@ -49,6 +49,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link Selector} and so does the multi-plexing of these in the event loop.
  *
  */
+/*
+ * NioEventLoop线程模型:
+ *     单线程处理注册在一个多路复用器【Selector】上所有channel的I/O事件,减少上下文的切换
+ *     一个NioEventLoop绑定一个Selector,处理一组的channel的I/O事件
+ */
 public final class NioEventLoop extends SingleThreadEventLoop {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(NioEventLoop.class);
@@ -263,6 +268,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
         // Register all channels to the new Selector.
         int nChannels = 0;
+        //将老的selector上注册的channel事件复制到新的selector上
         for (;;) {
             try {
                 for (SelectionKey key: oldSelector.keys()) {
@@ -314,10 +320,16 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         logger.info("Migrated " + nChannels + " channel(s) to the new Selector.");
     }
 
+    /**
+     * 线程run方法:
+     * (1)不停地循环处理绑定的selector上的channel i/o事件
+     * (2)按比例处理实时的任务以及定时的任务
+     */
     @Override
     protected void run() {
         for (;;) {
             try {
+                //1.看有没有准备就绪的channel事件
                 switch (selectStrategy.calculateStrategy(selectNowSupplier, hasTasks())) {
                     case SelectStrategy.CONTINUE:
                         continue;
@@ -368,9 +380,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 } else {
                     final long ioStartTime = System.nanoTime();
 
+                    //2.处理channel事件
                     processSelectedKeys();
 
                     final long ioTime = System.nanoTime() - ioStartTime;
+                    //3.按比例时间处理实时任务和定时任务
                     runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
                 }
 
@@ -444,6 +458,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             i.remove();
 
             if (a instanceof AbstractNioChannel) {
+                //处理就绪的channel事件
                 processSelectedKey(k, (AbstractNioChannel) a);
             } else {
                 @SuppressWarnings("unchecked")
@@ -540,6 +555,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             int readyOps = k.readyOps();
             // Also check for readOps of 0 to workaround possible JDK bug which may otherwise lead
             // to a spin loop
+            //处理读事件
             if ((readyOps & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0 || readyOps == 0) {
                 unsafe.read();
                 if (!ch.isOpen()) {
@@ -547,10 +563,12 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     return;
                 }
             }
+            //处理写事件
             if ((readyOps & SelectionKey.OP_WRITE) != 0) {
                 // Call forceFlush which will also take care of clear the OP_WRITE once there is nothing left to write
                 ch.unsafe().forceFlush();
             }
+            //处理连接事件
             if ((readyOps & SelectionKey.OP_CONNECT) != 0) {
                 // remove OP_CONNECT as otherwise Selector.select(..) will always return without blocking
                 // See https://github.com/netty/netty/issues/924
@@ -695,6 +713,10 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         selectCnt >= SELECTOR_AUTO_REBUILD_THRESHOLD) {
                     // The selector returned prematurely many times in a row.
                     // Rebuild the selector to work around the problem.
+                    /*
+                     * jdk nio bug(Selector.select()空轮询导致cpu100%)
+                     * 解决:触发selector多路复用器重建
+                     */
                     logger.warn(
                             "Selector.select() returned prematurely {} times in a row; rebuilding selector.",
                             selectCnt);
