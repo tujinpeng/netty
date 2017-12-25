@@ -50,9 +50,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  */
 /*
- * NioEventLoop线程模型:
- *     单线程处理注册在一个多路复用器【Selector】上所有channel的I/O事件,减少上下文的切换
- *     一个NioEventLoop绑定一个Selector,处理一组的channel的I/O事件
+ * NioEventLoop单线程模型:
+ *   (1)一个NioEventLoop绑定一个Selector,注册多个channel事件
+ *   (2)单线程(减少上下文的切换)处理多个【channel的I/O事件】,还要额外处理【实时任务】和到期的【定时任务】
+ * 线程安全设计:
+ *   用户线程【非NioEventLoop绑定的线程】向NioEventLoop提交任务时,直接加入到MpscLinkedQueue【多生产者单消费者】线程安全队列中,由其绑定的线程顺序消费
  */
 public final class NioEventLoop extends SingleThreadEventLoop {
 
@@ -336,32 +338,32 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     case SelectStrategy.SELECT:
                         select(wakenUp.getAndSet(false));
 
-                        // 'wakenUp.compareAndSet(false, true)' is always evaluated
-                        // before calling 'selector.wakeup()' to reduce the wake-up
+                        // 'wakenUp.compareAndSet(false, true)' is always evaluated       //在调用selector.wakeup()唤醒多路复用器之前,通常要先cas设置一个原子的布尔值为true
+                        // before calling 'selector.wakeup()' to reduce the wake-up       //如果这个时候并发很高的话,可以减少不必要的selector.wakeup()带来的开销【Selector.wakeup()是一个很耗时的操作】
                         // overhead. (Selector.wakeup() is an expensive operation.)
                         //
-                        // However, there is a race condition in this approach.
-                        // The race condition is triggered when 'wakenUp' is set to
+                        // However, there is a race condition in this approach.           //但是,下面存在一种竞争的情况
+                        // The race condition is triggered when 'wakenUp' is set to       //当过早设置wakenUp为true,这种情况会被触发
                         // true too early.
                         //
-                        // 'wakenUp' is set to true too early if:
-                        // 1) Selector is waken up between 'wakenUp.set(false)' and
+                        // 'wakenUp' is set to true too early if:                         //'wakeUp'设置为true过早的右下面两种情况:
+                        // 1) Selector is waken up between 'wakenUp.set(false)' and       // 1)在selector.select()阻塞获取就绪的事件前,过早设置'wakeUp'为ture,唤醒selector
                         //    'selector.select(...)'. (BAD)
-                        // 2) Selector is waken up between 'selector.select(...)' and
+                        // 2) Selector is waken up between 'selector.select(...)' and     // 2)在selector.select()阻塞获取就绪的事件后,过早设置'wakeUp'为ture,唤醒selector
                         //    'if (wakenUp.get()) { ... }'. (OK)
                         //
-                        // In the first case, 'wakenUp' is set to true and the
-                        // following 'selector.select(...)' will wake up immediately.
-                        // Until 'wakenUp' is set to false again in the next round,
+                        // In the first case, 'wakenUp' is set to true and the            //第一种情况在'selector.select(...)'之前过早设置'wakeUp'为true,之后的'selector.select(...)'多路复用器超时轮询事件将不会阻塞,立即返回
+                        // following 'selector.select(...)' will wake up immediately.     //直到下一轮开始'wakeUp'设置成false之前,'wakeUp'此时都是ture,这段时间内任务提交线程设置'wakenUp.compareAndSet(false, true)' 都会失败,
+                        // Until 'wakenUp' is set to false again in the next round,       //因此尝试唤醒selector也会失败,这就导致了接下来的'selector.select(...)'多路复用器select()操作会有【不必要的阻塞】
                         // 'wakenUp.compareAndSet(false, true)' will fail, and therefore
                         // any attempt to wake up the Selector will fail, too, causing
                         // the following 'selector.select(...)' call to block
                         // unnecessarily.
                         //
-                        // To fix this problem, we wake up the selector again if wakenUp
+                        // To fix this problem, we wake up the selector again if wakenUp  //为了修复上面的问题,判断如果是'wakeUp'=true导致selector.select()立即返回的情况,则再次唤醒selector.wakeUp()
                         // is true immediately after selector.select(...).
                         // It is inefficient in that it wakes up the selector for both
-                        // the first case (BAD - wake-up required) and the second case
+                        // the first case (BAD - wake-up required) and the second case    //上面的两种情况唤醒selector都是一个很耗时的操作
                         // (OK - no wake-up required).
 
                         if (wakenUp.get()) {
