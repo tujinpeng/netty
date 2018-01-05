@@ -30,6 +30,7 @@ import java.util.concurrent.ThreadFactory;
 /**
  * {@link MultithreadEventLoopGroup} implementations which is used for NIO {@link Selector} based {@link Channel}s.
  */
+//一个NioEventLoopGroup持有NioEventLoop的集合,负责为每一个新创建的channel,通过轮询的方式分配一个NioEventLoop
 public class NioEventLoopGroup extends MultithreadEventLoopGroup {
 
     /**

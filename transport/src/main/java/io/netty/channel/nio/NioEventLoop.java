@@ -50,11 +50,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  */
 /*
- * NioEventLoop单线程模型:
- *   (1)一个NioEventLoop绑定一个Selector,注册多个channel事件
- *   (2)单线程(减少上下文的切换)处理多个【channel的I/O事件】,还要额外处理【实时任务】和到期的【定时任务】
- * 线程安全设计:
- *   用户线程【非NioEventLoop绑定的线程】向NioEventLoop提交任务时,直接加入到MpscLinkedQueue【多生产者单消费者】线程安全队列中,由其绑定的线程顺序消费
+ * NioEventLoop:处理在连接的生命周期内发生的所有事件【事件循环】
+ * 设计:
+ *    (1)NioEventLoop事件循环将由一个永不改变的Thread驱动(减少上下文的切换)
+ *    (2)一个NioEventLoop绑定一个Selector,可以注册多个channel事件
+ *    (3)NioEventLoop持有一个MpscLinkedQueue【多生产者单消费者】任务队列,一个定时任务队列,用来处理异步的任务
+ * 责任:
+ *    (1)负责处理多个channel的整个生命周期里的所有【I/O事件】,
+ *    (2)还要额外处理【实时任务】
+ *    (3)到期的【定时任务】
+ * 线程管理:
+ *    Netty线程模型的卓越性能取决于对于当前执行的Thread的身份的确定-》
+ *    用户线程向NioEventLoop提交任务时,判断当前线程是否是【分配给NioEventLoop的线程】,若是的则执行执行任务,否则丢到NioEventLoop的【内部队列】中稍后交给【分配的线程】执行
  */
 public final class NioEventLoop extends SingleThreadEventLoop {
 
@@ -717,7 +724,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     // Rebuild the selector to work around the problem.
                     /*
                      * jdk nio bug(Selector.select()空轮询导致cpu100%)
-                     * 解决:触发selector多路复用器重建
+                     * 解决:设定一个空轮询的阀值,触发selector多路复用器重建
                      */
                     logger.warn(
                             "Selector.select() returned prematurely {} times in a row; rebuilding selector.",
